@@ -37,6 +37,16 @@ use hmac::Hmac;
 use sha2::Sha256;
 use dialoguer::Password;
 
+pub static SERVER_URL: Lazy<String> = Lazy::new(|| {
+    let args: Vec<String> = env::args().collect();
+    for i in 0..args.len() {
+        if args[i] == "--server" && i + 1 < args.len() {
+            return format!("http://{}:22668", args[i + 1]);
+        }
+    }
+    "http://localhost:22668".to_string()
+});
+
 pub static WALLET_PK: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
 pub static WALLET_SK: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
 pub static WALLET_ADDRESS: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
@@ -294,7 +304,7 @@ async fn start_rpc_server() {
                                         let address = chunk[0];
                                         
                                         if address.len() != 64 || !address.starts_with("xP") || address[2..].chars().any(|c| !c.is_ascii_hexdigit()) {
-                                            println!("\nInvalid address: {} (must be 64-character hex string)", address);
+                                            println!("\nInvalid address: {}", address);
 											valid = false;
                                         }
                                         let amount: f64 = match chunk[1].parse::<f64>() {
@@ -410,7 +420,7 @@ async fn start_rpc_server() {
 													.build()
 													.expect("Error creating HTTP client");
 												
-												match client.post("http://localhost:22668/rpc")
+												match client.post(format!("{}/rpc", *SERVER_URL))
 													.header(header::CONTENT_TYPE, "application/json")
 													.json(&send_request)
 													.send() {
@@ -445,163 +455,6 @@ async fn start_rpc_server() {
                                 } else {
                                     response = format!(r#"{{"jsonrpc": "2.0","id": "0","error": "No wallet database available"}}"#);
                                 }
-                            }
-                        }
-                        if req["method"] == "transferm" {
-                            if let (Some(address), Some(amount), Some(message)) = (
-                                req["params"]["address"].as_str(),
-                                req["params"]["amount"].as_u64(),
-                                req["params"]["message"].as_str(),
-                            ) {
-                                t_amount = amount;
-                                println!("\n[RPC] Injecting transferm command: {} {} {}", address, amount, message);
-                                
-                                let wallet_name_global = WALLET_N.lock().unwrap();
-                                let pk = WALLET_PK.lock().unwrap();
-                                let sk = WALLET_SK.lock().unwrap();
-                                let w_address = WALLET_ADDRESS.lock().unwrap();
-                                
-                                let db_conn_guard = DB_CONN.lock().unwrap();
-                                if let Some(conn) = db_conn_guard.as_ref() {
-                                    let dest_addresses = vec![address];
-                                    let amounts = vec![amount];
-                                    let total_amount = amount;
-
-                                    if !address.starts_with("xP") || address.len() != 64 || address.chars().skip(2).any(|c| !c.is_ascii_hexdigit()) {
-                                        println!("\nInvalid address: {}", address);
-                                        response = format!(r#"{{"jsonrpc": "2.0","id": "0","error": "Invalid address"}}"#);
-                                    } else {
-                                        match get_unspent_utxos(&conn) {
-                                            Ok(utxos) => {
-                                                let fee_per_input = 5000;
-                                                let fee_per_output = 2000;
-                                                
-                                                let output_count = dest_addresses.len() + 1;
-                                                let mut fee_estimate = fee_per_input + (output_count as u64 * fee_per_output);
-                                                
-                                                let (selected_utxos, total_inputs, actual_fee) = select_utxos(&utxos, total_amount, fee_per_input);
-                                                
-                                                if selected_utxos.is_empty() {
-                                                    println!("\nNot enough funds or no UTXOs available");
-                                                    response = format!(r#"{{"jsonrpc": "2.0","id": "0","error": "Not enough funds"}}"#);
-                                                } else {
-                                                    let exact_fee = (selected_utxos.len() as u64 * fee_per_input) + (output_count as u64 * fee_per_output);
-                                                    
-                                                    if total_inputs < total_amount + exact_fee {
-                                                        println!("\nNot enough funds when including exact fees");
-                                                        println!("- Needed: {} (amount) + {} (fees) = {}", 
-                                                            total_amount, exact_fee, total_amount + exact_fee);
-                                                        println!("- Available: {}", total_inputs);
-                                                        response = format!(r#"{{"jsonrpc": "2.0","id": "0","error": "Not enough funds including fees"}}"#);
-                                                    } else {
-                                                        let (inputs, outputs, fee) = build_transaction(
-                                                            &selected_utxos,
-                                                            amounts,
-                                                            exact_fee,
-                                                            dest_addresses.clone(),
-                                                            &w_address,
-                                                        );
-
-                                                        println!("\nOutputs:");
-                                                        for output in &outputs {
-                                                            println!("- {} -> {} xPARA", 
-                                                                output.0, output.1 as f64 / 100000000.0);
-                                                        }
-
-                                                        println!("\nFee: {} xPARA ({} inputs × {} + {} outputs × {})", 
-                                                            fee as f64 / 100000000.0,
-                                                            selected_utxos.len(), fee_per_input,
-                                                            output_count, fee_per_output);
-
-                                                        let mut raw_tx = RawTransaction {
-                                                            inputcount: format!("{:02x}", inputs.len()),
-                                                            inputs: inputs.iter().map(|(txid, vout, _)| {
-                                                                INTXO {
-                                                                    txid: txid.clone(),
-                                                                    vout: *vout,
-                                                                    extrasize: "00".to_string(),
-                                                                    extra: message.to_string(),
-                                                                    sequence: 0xFFFFFFFF,
-                                                                }
-                                                            }).collect(),
-                                                            outputcount: format!("{:02x}", outputs.len()),
-                                                            outputs: outputs.clone(),
-                                                            fee: exact_fee,
-                                                            sigpub: pk.to_string(),
-                                                            signature: "".to_string(),
-                                                        };
-                                                        let tx_binary = bincode::serialize(&raw_tx)
-                                                            .expect("Failed to serialize transaction");
-                                                        let tx_hash = blake3::hash(&tx_binary);
-                                                        
-                                                        let sk_bytes = decode(&*sk).expect("Invalid pubkey");
-                                                        let ssk = SecretKey::from_bytes(&sk_bytes).expect("Invalid pubkey format");
-                                                        
-                                                        let signature = detached_sign(tx_hash.as_bytes(), &ssk);
-                                                        let signature_hex = encode(signature.as_bytes());
-                                                        raw_tx.signature = signature_hex;
-                                                        let signed_tx_binary = bincode::serialize(&raw_tx)
-                                                            .expect("Failed to serialize signed transaction");
-                                                        let signed_tx_hex = encode(&signed_tx_binary);
-                                                        println!("\nTransaction signed successfully");
-                                                        let th = blake3::hash(signed_tx_hex.as_bytes());
-                                                        txh = hex::encode(th.as_bytes());
-                                                        println!("Transaction ID: {}", txh);
-                                                        println!("\nBroadcasting transaction...");
-
-                                                        let send_request = json!({
-                                                            "jsonrpc": "2.0",
-                                                            "id": "xpara",
-                                                            "method": "xp_sendRawTransaction",
-                                                            "params": [signed_tx_hex]
-                                                        });
-                                                        
-                                                        let client = Client::builder()
-                                                            .build()
-                                                            .expect("Error creating HTTP client");
-                                                        
-                                                        match client.post("http://localhost:22668/rpc")
-                                                            .header(header::CONTENT_TYPE, "application/json")
-                                                            .json(&send_request)
-                                                            .send() {
-                                                                Ok(resp) => {
-                                                                    if let Ok(response_text) = resp.text() {
-                                                                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&response_text) {
-                                                                            if let Some(result) = json.get("result").and_then(|r| r.as_str()) {
-                                                                                if result == txh {
-                                                                                    response = format!(
-                                                                                        r#"{{"jsonrpc": "2.0","id": "0","result": {{"amount": {},"fee": 1000000,"multisig_txset": "","tx_blob": "","tx_hash": "{}","tx_key": "{}","tx_metadata": "","unsigned_txset": ""}}}}"#,
-                                                                                        t_amount, txh, txh
-                                                                                    );
-                                                                                    println!("\nTransaction sent successfully");
-
-                                                                                    for (txid, vout, _) in inputs {
-                                                                                        conn.execute(
-                                                                                            "UPDATE inputs SET status = 'spent' WHERE txid = ?1 AND vout = ?2",
-                                                                                            params![txid, vout],
-                                                                                        ).expect("Failed to update input status");
-                                                                                    }
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                },
-                                                                Err(e) => println!("\nError sending transaction: {}", e),
-                                                            }
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                println!("\nError fetching UTXOs: {}", e);
-                                                response = format!(r#"{{"jsonrpc": "2.0","id": "0","error": "Error fetching UTXOs"}}"#);
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    response = format!(r#"{{"jsonrpc": "2.0","id": "0","error": "No wallet database available"}}"#);
-                                }
-                            } else {
-                                response = format!(r#"{{"jsonrpc": "2.0","id": "0","error": "Invalid parameters for transferm"}}"#);
                             }
                         }
 						if req["method"] == "get_transactions" {
@@ -1437,7 +1290,7 @@ fn input_thread(
                                         "params": [signed_tx_hex]
                                     });
 
-                                    match client.post("http://localhost:22668/rpc")
+                                    match client.post(format!("{}/rpc", *SERVER_URL))
                                         .header(header::CONTENT_TYPE, "application/json")
                                         .json(&send_request)
                                         .send() {
@@ -1630,7 +1483,7 @@ fn input_thread(
 										"method": "xp_sendRawTransaction",
 										"params": [signed_tx_hex]
 									});
-									match client.post("http://localhost:22668/rpc")
+									match client.post(format!("{}/rpc", *SERVER_URL))
 										.header(header::CONTENT_TYPE, "application/json")
 										.json(&send_request)
 										.send() {
@@ -1705,7 +1558,7 @@ fn check_confirm_utxos(conn: &Connection) {
             "params": [block_height.to_string()]
         });
         
-        if let Ok(resp) = client.post("http://localhost:22668/rpc")
+        if let Ok(resp) = client.post(format!("{}/rpc", *SERVER_URL))
             .header(header::CONTENT_TYPE, "application/json")
             .json(&request)
             .send() 
@@ -2078,7 +1931,7 @@ async fn main() {
 			"params": [last_block.to_string()]
 		});
 
-		let response = clientb.post("http://localhost:22668/rpc")
+		let response = clientb.post(format!("{}/rpc", *SERVER_URL))
 			.header(header::CONTENT_TYPE, "application/json")
 			.json(&request)
 			.send()
