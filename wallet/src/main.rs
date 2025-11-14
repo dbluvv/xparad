@@ -256,6 +256,8 @@ async fn start_rpc_server() {
                             }
                         }
                         if req["method"] == "transfer" {
+							let mut valid = true;
+							
                             if let Some(destinations) = req["params"]["destinations"].as_array() {
                                 let mut cmd = String::from("");
                                 for dest in destinations {
@@ -274,6 +276,7 @@ async fn start_rpc_server() {
 
                                 if addresses.len() % 2 != 0 || addresses.is_empty() {
                                     println!("\nInvalid send command. Usage: send <addr1> <amount1> [addr2 amount2 ...]");
+									valid = false;
                                 }
                                 
                                 let wallet_name_global = WALLET_N.lock().unwrap();
@@ -290,13 +293,14 @@ async fn start_rpc_server() {
                                     for chunk in addresses.chunks(2) {
                                         let address = chunk[0];
                                         
-                                        if address.len() != 64 || address.chars().any(|c| !c.is_ascii_hexdigit()) {
+                                        if address.len() != 64 || !address.starts_with("xP") || address[2..].chars().any(|c| !c.is_ascii_hexdigit()) {
                                             println!("\nInvalid address: {} (must be 64-character hex string)", address);
+											valid = false;
                                         }
-                                        
                                         let amount: f64 = match chunk[1].parse::<f64>() {
                                             Ok(num) => num,
                                             Err(_) => {
+												valid = false;
                                                 println!("\nInvalid amount: {}", chunk[1]);
                                                 0.0
                                             }
@@ -310,6 +314,7 @@ async fn start_rpc_server() {
 
                                     if amounts.is_empty() {
                                         println!("\nNo valid amounts provided");
+										valid = false;
                                     }
 
                                     match get_unspent_utxos(&conn) {
@@ -324,6 +329,7 @@ async fn start_rpc_server() {
                                             
                                             if selected_utxos.is_empty() {
                                                 println!("\nNot enough funds or no UTXOs available");
+												valid = false;
                                             }
                                             
                                             let exact_fee = (selected_utxos.len() as u64 * fee_per_input) + (output_count as u64 * fee_per_output);
@@ -333,6 +339,7 @@ async fn start_rpc_server() {
                                                 println!("- Needed: {} (amount) + {} (fees) = {}", 
                                                     total_amount, exact_fee, total_amount + exact_fee);
                                                 println!("- Available: {}", total_inputs);
+												valid = false;
                                             }
 
                                             let (inputs, outputs, fee) = build_transaction(
@@ -388,47 +395,50 @@ async fn start_rpc_server() {
                                             let th = blake3::hash(signed_tx_hex.as_bytes());
                                             txh = hex::encode(th.as_bytes());
                                             println!("Transaction ID: {}", txh);
-                                            println!("\nBroadcasting transaction...");
+											
+											if valid == true {
+												println!("\nBroadcasting transaction...");
 
-                                            let send_request = json!({
-                                                "jsonrpc": "2.0",
-                                                "id": "xpara",
-                                                "method": "xp_sendRawTransaction",
-                                                "params": [signed_tx_hex]
-                                            });
-                                            
-                                            let client = Client::builder()
-                                                .build()
-                                                .expect("Error creating HTTP client");
-                                            
-                                            match client.post("http://localhost:22668/rpc")
-                                                .header(header::CONTENT_TYPE, "application/json")
-                                                .json(&send_request)
-                                                .send() {
-                                                    Ok(resp) => {
-                                                        if let Ok(response_text) = resp.text() {
-                                                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&response_text) {
-                                                                if let Some(result) = json.get("result").and_then(|r| r.as_str()) {
-                                                                    if result == txh {
-                                                                        response = format!(
-                                                                            r#"{{"jsonrpc": "2.0","id": "0","result": {{"amount": {},"fee": 1000000,"multisig_txset": "","tx_blob": "","tx_hash": "{}","tx_key": "{}","tx_metadata": "","unsigned_txset": ""}}}}"#,
-                                                                            t_amount, txh, txh
-                                                                        );
-                                                                        println!("\nTransaction sent successfully");
+												let send_request = json!({
+													"jsonrpc": "2.0",
+													"id": "xpara",
+													"method": "xp_sendRawTransaction",
+													"params": [signed_tx_hex]
+												});
+												
+												let client = Client::builder()
+													.build()
+													.expect("Error creating HTTP client");
+												
+												match client.post("http://localhost:22668/rpc")
+													.header(header::CONTENT_TYPE, "application/json")
+													.json(&send_request)
+													.send() {
+														Ok(resp) => {
+															if let Ok(response_text) = resp.text() {
+																if let Ok(json) = serde_json::from_str::<serde_json::Value>(&response_text) {
+																	if let Some(result) = json.get("result").and_then(|r| r.as_str()) {
+																		if result == txh {
+																			response = format!(
+																				r#"{{"jsonrpc": "2.0","id": "0","result": {{"amount": {},"fee": 1000000,"multisig_txset": "","tx_blob": "","tx_hash": "{}","tx_key": "{}","tx_metadata": "","unsigned_txset": ""}}}}"#,
+																				t_amount, txh, txh
+																			);
+																			println!("\nTransaction sent successfully");
 
-                                                                        for (txid, vout, _) in inputs {
-                                                                            conn.execute(
-                                                                                "UPDATE inputs SET status = 'spent' WHERE txid = ?1 AND vout = ?2",
-                                                                                params![txid, vout],
-                                                                            ).expect("Failed to update input status");
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    Err(e) => println!("\nError sending transaction: {}", e),
-                                                }
+																			for (txid, vout, _) in inputs {
+																				conn.execute(
+																					"UPDATE inputs SET status = 'spent' WHERE txid = ?1 AND vout = ?2",
+																					params![txid, vout],
+																				).expect("Failed to update input status");
+																			}
+																		}
+																	}
+																}
+															}
+														},
+														Err(e) => println!("\nError sending transaction: {}", e),
+													}
+											}
                                         }
                                         Err(e) => println!("\nError fetching UTXOs: {}", e),
                                     }
@@ -716,6 +726,7 @@ fn init_wallet_db(wallet_name: &str) -> Result<Connection> {
     let db_path = format!("wallets/{}.dat", wallet_name);
     let conn = Connection::open(db_path)?;
 
+    // Verificar si es una wallet antigua (sin los nuevos campos)
     let table_exists = conn.query_row(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='inputs'",
         [],
@@ -723,6 +734,7 @@ fn init_wallet_db(wallet_name: &str) -> Result<Connection> {
     ).is_ok();
 
     if table_exists {
+        // Verificar si tiene los nuevos campos
         let mut has_msg = false;
         let mut has_block = false;
         let mut has_ts = false;
@@ -743,12 +755,19 @@ fn init_wallet_db(wallet_name: &str) -> Result<Connection> {
             }
         }
 
+        // Si falta alguno de los nuevos campos, es una wallet antigua
         if !has_msg || !has_block || !has_ts {
             println!("Detected old wallet database. Migrating to new format...");
+            
+            // Hacer backup de los datos existentes
             let last_block: u64 = get_last_block(&conn);
             let utxos = get_unspent_utxos(&conn).unwrap_or_else(|_| Vec::new());
+            
+            // Borrar las tablas existentes
             conn.execute("DROP TABLE IF EXISTS inputs", [])?;
             conn.execute("DROP TABLE IF EXISTS meta", [])?;
+
+            // Crear las nuevas tablas con los campos adicionales
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS meta (
                     key TEXT PRIMARY KEY,
@@ -780,11 +799,13 @@ fn init_wallet_db(wallet_name: &str) -> Result<Connection> {
 				[],
 			)?;
 
+            // Restaurar el último bloque
             update_last_block(&conn, last_block);
             
             println!("Migration completed. Wallet will resync from block {}", last_block);
         }
     } else {
+        // Crear las tablas desde cero si no existen
         conn.execute(
             "CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
@@ -1105,7 +1126,7 @@ fn get_tx_details(conn: &Connection, txid: &str) -> Result<Option<TxDetails>> {
 fn get_all_transactions(conn: &Connection, current_block: u64) -> Result<Vec<TxDetails>> {
     let mut stmt = conn.prepare(
         "SELECT txid, vout, amount, block_hash, block_height, status, msg, block, ts, direction, net_amount 
-         FROM inputs ORDER BY ts DESC"
+         FROM inputs ORDER BY ts DESC LIMIT 100"
     )?;
     
     let rows = stmt.query_map([], |row| map_row_to_txdetails(row, current_block))?;
@@ -1136,7 +1157,7 @@ fn get_transactions_by_msg(conn: &Connection, msg: &str, current_block: u64) -> 
     let search_msg = format!("%{}%", msg);
     let mut stmt = conn.prepare(
         "SELECT txid, vout, amount, block_hash, block_height, status, msg, block, ts, direction, net_amount 
-         FROM inputs WHERE msg LIKE ?1 ORDER BY ts DESC"
+         FROM inputs WHERE msg LIKE ?1 ORDER BY ts DESC LIMIT 100"
     )?;
     
     let rows = stmt.query_map(params![search_msg], |row| map_row_to_txdetails(row, current_block))?;
@@ -1151,7 +1172,7 @@ fn get_transactions_by_msg(conn: &Connection, msg: &str, current_block: u64) -> 
 fn get_transactions_by_direction(conn: &Connection, direction: &str, current_block: u64) -> Result<Vec<TxDetails>> {
     let mut stmt = conn.prepare(
         "SELECT txid, vout, amount, block_hash, block_height, status, msg, block, ts, direction, net_amount 
-         FROM inputs WHERE direction = ?1 ORDER BY ts DESC"
+         FROM inputs WHERE direction = ?1 ORDER BY ts DESC LIMIT 100"
     )?;
     
     let rows = stmt.query_map(params![direction], |row| map_row_to_txdetails(row, current_block))?;
@@ -1173,7 +1194,7 @@ fn print_help() {
     println!("  refresh       - Refresh wallet balances and inputs from scratch");
     println!("  send <addr1> <amount1> [addr2 amount2 ...] - Send to multiple addresses");
     println!("  unspent_utxo  - Show all unspent transaction outputs");
-    println!("  print_tx <txid> - Show detailed information about a transaction");
+    println!("  print_tx <txid> - Show detailed information about a transaction"); // <- Nueva línea
 }
 
 fn input_thread(
@@ -1723,7 +1744,7 @@ fn check_confirm_utxos(conn: &Connection) {
 
 #[tokio::main]
 async fn main() {
-    println!("\nxPARASITE CLI WALLET 1.3\n");
+    println!("\nxPARASITE CLI WALLET 1.4\n");
     
     let choices = vec![
         "Create new wallet",
@@ -2081,10 +2102,11 @@ async fn main() {
 							consecutive_empty_responses += 1;
 							
 							if showing_progress {
+								// Si hemos tenido varias respuestas vacías consecutivas, probablemente estamos al día
 								if consecutive_empty_responses >= MAX_CONSECUTIVE_EMPTY {
 									let clean_line = "                                                                                                 ";
 									print!("\rSynced up to block: {} {}", last_block, clean_line);
-									println!();
+									println!(); // Nueva línea
 									showing_progress = false;
 								} else {
 									print!("\rSyncing... current block: {} (waiting for new blocks...)", last_block);
@@ -2094,6 +2116,7 @@ async fn main() {
 							std::thread::sleep(std::time::Duration::from_secs(1));
 							continue;
 						} else {
+							// Reiniciar el contador cuando recibimos bloques
 							consecutive_empty_responses = 0;
 							
 							if showing_progress {
@@ -2102,7 +2125,8 @@ async fn main() {
 								showing_progress = false;
 							}
 						}
-
+						
+						// Si vamos a procesar bloques, limpiamos la línea de progreso
 						if showing_progress {
 							print!("\r");
 							io::stdout().flush().unwrap();
@@ -2204,6 +2228,7 @@ async fn main() {
 								}
 							}
 						}
+						// Si procesamos bloques pero no encontramos outputs, mantenemos el progreso
 						if !found_outputs && !showing_progress {
 							if let Some(last_block_value) = blocks.last() {
 								if let Ok(block) = serde_json::from_value::<Block>(last_block_value.clone()) {
