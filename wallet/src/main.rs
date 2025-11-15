@@ -12,6 +12,7 @@ use reqwest::header;
 use serde_json::{json, Value};
 use serde::{Serialize, Deserialize};
 use bincode;
+use std::process;
 
 use blake3;
 use hex::{encode, decode};
@@ -41,10 +42,30 @@ pub static SERVER_URL: Lazy<String> = Lazy::new(|| {
     let args: Vec<String> = env::args().collect();
     for i in 0..args.len() {
         if args[i] == "--server" && i + 1 < args.len() {
-            return format!("http://{}:22668", args[i + 1]);
+            return format!("http://{}", args[i + 1]);
         }
     }
     "http://localhost:22668".to_string()
+});
+
+pub static SERVER_PORT: Lazy<String> = Lazy::new(|| {
+    let args: Vec<String> = env::args().collect();
+    for i in 0..args.len() {
+        if args[i] == "--serverport" && i + 1 < args.len() {
+            return format!("{}", args[i + 1]);
+        }
+    }
+    "22668".to_string()
+});
+
+pub static WALLET_PORT: Lazy<String> = Lazy::new(|| {
+    let args: Vec<String> = env::args().collect();
+    for i in 0..args.len() {
+        if args[i] == "--port" && i + 1 < args.len() {
+            return format!("{}", args[i + 1]);
+        }
+    }
+    "44448".to_string()
 });
 
 pub static WALLET_PK: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
@@ -232,8 +253,8 @@ fn ask_to_continue() -> bool {
 }
 
 async fn start_rpc_server() {
-    let listener = TcpListener::bind("127.0.0.1:44448").await.expect("Cannot bind RPC port");
-    println!("\nListening for RPC on http://127.0.0.1:44448/rpc");
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", *WALLET_PORT)).await.expect("Cannot bind RPC port");
+    println!("\nListening for RPC on http://127.0.0.1:{}/rpc", *WALLET_PORT);
 
     loop {
         if let Ok((mut stream, _)) = listener.accept().await {
@@ -280,7 +301,6 @@ async fn start_rpc_server() {
                                         cmd.push_str(&format!(" {} {:.8}", addr, amount_xpara));
                                     }
                                 }
-                                println!("\n[RPC] Injecting command: {}", cmd);
                                 
                                 let addresses: Vec<&str> = cmd.split_whitespace().collect();
 
@@ -360,7 +380,7 @@ async fn start_rpc_server() {
                                                 &w_address,
                                             );
 
-                                            println!("\nOutputs:");
+                                            /*println!("\nOutputs:");
                                             for output in &outputs {
                                                 println!("- {} -> {} xPARA", 
                                                     output.0, output.1 as f64 / 100000000.0);
@@ -369,7 +389,7 @@ async fn start_rpc_server() {
                                             println!("\nFee: {} xPARA ({} inputs × {} + {} outputs × {})", 
                                                 fee as f64 / 100000000.0,
                                                 selected_utxos.len(), fee_per_input,
-                                                output_count, fee_per_output);
+                                                output_count, fee_per_output);*/
 
                                             let mut raw_tx = RawTransaction {
                                                 inputcount: format!("{:02x}", inputs.len()),
@@ -420,7 +440,7 @@ async fn start_rpc_server() {
 													.build()
 													.expect("Error creating HTTP client");
 												
-												match client.post(format!("{}/rpc", *SERVER_URL))
+												match client.post(format!("{}:{}/rpc", *SERVER_URL, *SERVER_PORT))
 													.header(header::CONTENT_TYPE, "application/json")
 													.json(&send_request)
 													.send() {
@@ -430,7 +450,7 @@ async fn start_rpc_server() {
 																	if let Some(result) = json.get("result").and_then(|r| r.as_str()) {
 																		if result == txh {
 																			response = format!(
-																				r#"{{"jsonrpc": "2.0","id": "0","result": {{"amount": {},"fee": 1000000,"multisig_txset": "","tx_blob": "","tx_hash": "{}","tx_key": "{}","tx_metadata": "","unsigned_txset": ""}}}}"#,
+																				r#"{{"jsonrpc": "2.0","id": "0","result": {{"amount": {},"multisig_txset": "","tx_blob": "","tx_hash": "{}","tx_key": "{}","tx_metadata": "","unsigned_txset": ""}}}}"#,
 																				t_amount, txh, txh
 																			);
 																			println!("\nTransaction sent successfully");
@@ -441,12 +461,15 @@ async fn start_rpc_server() {
 																					params![txid, vout],
 																				).expect("Failed to update input status");
 																			}
-																		}
-																	}
-																}
-															}
+																		} else { response = format!(r#"{{"jsonrpc": "2.0","id": "0","error": "-3201"}}"#); }
+																	} else { response = format!(r#"{{"jsonrpc": "2.0","id": "0","error": "-3202"}}"#); } 
+																} else { response = format!(r#"{{"jsonrpc": "2.0","id": "0","error": "-3203"}}"#); }
+															} else { response = format!(r#"{{"jsonrpc": "2.0","id": "0","error": "-3204"}}"#); }
 														},
-														Err(e) => println!("\nError sending transaction: {}", e),
+														Err(e) => {
+															println!("\nError sending transaction: {}", e);
+															response = format!(r#"{{"jsonrpc": "2.0","id": "0","error": "-3205"}}"#);
+														},
 													}
 											}
                                         }
@@ -579,7 +602,6 @@ fn init_wallet_db(wallet_name: &str) -> Result<Connection> {
     let db_path = format!("wallets/{}.dat", wallet_name);
     let conn = Connection::open(db_path)?;
 
-    // Verificar si es una wallet antigua (sin los nuevos campos)
     let table_exists = conn.query_row(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='inputs'",
         [],
@@ -587,7 +609,6 @@ fn init_wallet_db(wallet_name: &str) -> Result<Connection> {
     ).is_ok();
 
     if table_exists {
-        // Verificar si tiene los nuevos campos
         let mut has_msg = false;
         let mut has_block = false;
         let mut has_ts = false;
@@ -608,19 +629,12 @@ fn init_wallet_db(wallet_name: &str) -> Result<Connection> {
             }
         }
 
-        // Si falta alguno de los nuevos campos, es una wallet antigua
         if !has_msg || !has_block || !has_ts {
             println!("Detected old wallet database. Migrating to new format...");
-            
-            // Hacer backup de los datos existentes
             let last_block: u64 = get_last_block(&conn);
             let utxos = get_unspent_utxos(&conn).unwrap_or_else(|_| Vec::new());
-            
-            // Borrar las tablas existentes
             conn.execute("DROP TABLE IF EXISTS inputs", [])?;
             conn.execute("DROP TABLE IF EXISTS meta", [])?;
-
-            // Crear las nuevas tablas con los campos adicionales
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS meta (
                     key TEXT PRIMARY KEY,
@@ -651,14 +665,11 @@ fn init_wallet_db(wallet_name: &str) -> Result<Connection> {
 				)",
 				[],
 			)?;
-
-            // Restaurar el último bloque
             update_last_block(&conn, last_block);
             
             println!("Migration completed. Wallet will resync from block {}", last_block);
         }
     } else {
-        // Crear las tablas desde cero si no existen
         conn.execute(
             "CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
@@ -1047,7 +1058,7 @@ fn print_help() {
     println!("  refresh       - Refresh wallet balances and inputs from scratch");
     println!("  send <addr1> <amount1> [addr2 amount2 ...] - Send to multiple addresses");
     println!("  unspent_utxo  - Show all unspent transaction outputs");
-    println!("  print_tx <txid> - Show detailed information about a transaction"); // <- Nueva línea
+    println!("  print_tx <txid> - Show detailed information about a transaction");
 }
 
 fn input_thread(
@@ -1290,7 +1301,7 @@ fn input_thread(
                                         "params": [signed_tx_hex]
                                     });
 
-                                    match client.post(format!("{}/rpc", *SERVER_URL))
+                                    match client.post(format!("{}:{}/rpc", *SERVER_URL, *SERVER_PORT))
                                         .header(header::CONTENT_TYPE, "application/json")
                                         .json(&send_request)
                                         .send() {
@@ -1483,7 +1494,7 @@ fn input_thread(
 										"method": "xp_sendRawTransaction",
 										"params": [signed_tx_hex]
 									});
-									match client.post(format!("{}/rpc", *SERVER_URL))
+									match client.post(format!("{}:{}/rpc", *SERVER_URL, *SERVER_PORT))
 										.header(header::CONTENT_TYPE, "application/json")
 										.json(&send_request)
 										.send() {
@@ -1558,7 +1569,7 @@ fn check_confirm_utxos(conn: &Connection) {
             "params": [block_height.to_string()]
         });
         
-        if let Ok(resp) = client.post(format!("{}/rpc", *SERVER_URL))
+        if let Ok(resp) = client.post(format!("{}:{}/rpc", *SERVER_URL, *SERVER_PORT))
             .header(header::CONTENT_TYPE, "application/json")
             .json(&request)
             .send() 
@@ -1597,6 +1608,46 @@ fn check_confirm_utxos(conn: &Connection) {
 
 #[tokio::main]
 async fn main() {
+	
+	let args: Vec<String> = env::args().collect();
+	let help_mode = args.iter().any(|arg| arg == "--help") as u8;
+	
+	let mut lwallet = "".to_string();
+    if let Some(pos) = args.iter().position(|arg| arg == "--wallet") {
+        if let Some(afile) = args.get(pos + 1) {
+            lwallet = afile.clone();
+        } else {
+            eprintln!("Error: --wallet option requires a valid file.");
+            process::exit(1);
+        }
+    }
+	
+	let mut lpass = "".to_string();
+    if let Some(pos) = args.iter().position(|arg| arg == "--pass") {
+        if let Some(apass) = args.get(pos + 1) {
+            lpass = apass.clone();
+        } else {
+            eprintln!("Error: --pass option requires a password.");
+            process::exit(1);
+        }
+    }
+	
+	
+	if help_mode == 1 {
+		println!("Options:");
+		println!("  --rpc                         Enables RPC mode.");
+		println!("  --port PORT                   Set the rpc port number (default: 44448).");
+		println!("  --server SERVER_URL           Set the server port number (default: localhost).");
+		println!("  --serverport SERVER_PORT      Set the server port number (default: 22668).");
+		println!("  --wallet WALLET_NAME          Set the wallet filename to load.");
+		println!("  --pass WALLET_PASSWORD        Set the wallet password if encrypted.");
+		println!("  --help                        Display this help menu.");
+		println!();
+		println!("Example:");
+		println!("  xpara-wallet-cli --rpc --server xpara.site --serverport 22668 --port 44448");
+		process::exit(0);
+	}
+	
     println!("\nxPARASITE CLI WALLET 1.4\n");
     
     let choices = vec![
@@ -1604,13 +1655,16 @@ async fn main() {
         "Load from keys", 
         "Load existing wallet",
     ];
-    
-    let selection = Select::new()
+    let mut selection = 0;
+	
+	if lwallet == "" {
+		selection = Select::new()
         .with_prompt("Select an option")
         .items(&choices)
         .default(0)
         .interact()
         .unwrap();
+	} else { selection = 2; }
 
     let (pk, sk, address, wallet_name_opt) = match selection {
         0 => {
@@ -1793,34 +1847,48 @@ async fn main() {
 			(pk, sk, address, Some(name))
 		}
         2 => {
-            let wallets = match list_wallets() {
-                Ok(w) if !w.is_empty() => w,
-                _ => {
-                    println!("No saved wallets found. Create one first.");
-                    std::process::exit(1);
-                }
-            };
+			
+			let mut wallet_name: String = "".to_string();
+			
+			if lwallet == "" {
+			
+				let wallets = match list_wallets() {
+					Ok(w) if !w.is_empty() => w,
+					_ => {
+						println!("No saved wallets found. Create one first.");
+						std::process::exit(1);
+					}
+				};
 
-            let selection = Select::new()
-                .with_prompt("Select a wallet")
-                .items(&wallets)
-                .interact()
-                .unwrap();
+				let selection = Select::new()
+					.with_prompt("Select a wallet")
+					.items(&wallets)
+					.interact()
+					.unwrap();
 
-            let wallet_name = &wallets[selection];
+				wallet_name = wallets[selection].clone();
+			} else {
+				wallet_name = lwallet.to_string();
+			}
 
-            let mut wallet = match load_wallet_encrypted(wallet_name, "") {
+            let mut wallet = match load_wallet_encrypted(&wallet_name, "") {
                 Ok(w) => {
                     println!("Wallet loaded (unencrypted)");
                     w
                 }
                 Err(_) => {
-                    let password = Password::new()
-                        .with_prompt("Enter wallet password")
-                        .interact()
-                        .unwrap();
+					let mut password = "".to_string();
+					
+					if lpass == "" {					
+						password = Password::new()
+							.with_prompt("Enter wallet password")
+							.interact()
+							.unwrap();
+					} else {
+						password = lpass.to_string();
+					}
 
-                    match load_wallet_encrypted(wallet_name, &password) {
+                    match load_wallet_encrypted(&wallet_name, &password) {
                         Ok(w) => {
                             println!("Wallet loaded successfully (encrypted)");
                             w
@@ -1836,7 +1904,7 @@ async fn main() {
                 }
             };
 
-            println!("Wallet '{}' loaded successfully", wallet_name);
+            println!("Wallet '{}' loaded successfully", &wallet_name);
 
             let sk_bytes = decode(wallet.secret_key).expect("Invalid hex for private key");
             let pk_bytes = decode(wallet.public_key).expect("Invalid hex for public key");
@@ -1902,7 +1970,7 @@ async fn main() {
 
 	let mut showing_progress = false;
 	let mut consecutive_empty_responses = 0;
-	const MAX_CONSECUTIVE_EMPTY: u32 = 3;
+	const MAX_CONSECUTIVE_EMPTY: u32 = 0;
 	
 	 print_help();
 
@@ -1931,7 +1999,7 @@ async fn main() {
 			"params": [last_block.to_string()]
 		});
 
-		let response = clientb.post(format!("{}/rpc", *SERVER_URL))
+		let response = clientb.post(format!("{}:{}/rpc", *SERVER_URL, *SERVER_PORT))
 			.header(header::CONTENT_TYPE, "application/json")
 			.json(&request)
 			.send()
@@ -1941,12 +2009,18 @@ async fn main() {
 			Ok(resp) => {
 				let response_text = match resp.text().await {
 					Ok(text) => text,
-					Err(_) => continue,
+					Err(_) => {
+						println!("\nError connection server: {}:{}", *SERVER_URL, *SERVER_PORT);
+						continue;
+					},
 				};
 				
 				let json_response: Value = match serde_json::from_str(&response_text) {
 					Ok(json) => json,
-					Err(_) => continue,
+					Err(_) => {
+						println!("\nError connection server: {}:{}", *SERVER_URL, *SERVER_PORT);
+						continue;
+					},
 				};
 				
 				if let Some(result) = json_response.get("result") {
@@ -1955,21 +2029,19 @@ async fn main() {
 							consecutive_empty_responses += 1;
 							
 							if showing_progress {
-								// Si hemos tenido varias respuestas vacías consecutivas, probablemente estamos al día
 								if consecutive_empty_responses >= MAX_CONSECUTIVE_EMPTY {
 									let clean_line = "                                                                                                 ";
 									print!("\rSynced up to block: {} {}", last_block, clean_line);
-									println!(); // Nueva línea
+									println!();
 									showing_progress = false;
 								} else {
 									print!("\rSyncing... current block: {} (waiting for new blocks...)", last_block);
 									io::stdout().flush().unwrap();
 								}
 							}
-							std::thread::sleep(std::time::Duration::from_secs(1));
+							std::thread::sleep(std::time::Duration::from_secs(60));
 							continue;
 						} else {
-							// Reiniciar el contador cuando recibimos bloques
 							consecutive_empty_responses = 0;
 							
 							if showing_progress {
@@ -1979,7 +2051,6 @@ async fn main() {
 							}
 						}
 						
-						// Si vamos a procesar bloques, limpiamos la línea de progreso
 						if showing_progress {
 							print!("\r");
 							io::stdout().flush().unwrap();
@@ -2081,7 +2152,6 @@ async fn main() {
 								}
 							}
 						}
-						// Si procesamos bloques pero no encontramos outputs, mantenemos el progreso
 						if !found_outputs && !showing_progress {
 							if let Some(last_block_value) = blocks.last() {
 								if let Ok(block) = serde_json::from_value::<Block>(last_block_value.clone()) {
@@ -2095,12 +2165,10 @@ async fn main() {
 				}
 			}
 			Err(e) => {
-				if showing_progress {
-					print!("\r");
-					io::stdout().flush().unwrap();
-					showing_progress = false;
-				}
-				std::thread::sleep(std::time::Duration::from_secs(1));
+
+				println!("\nError connection server: {}:{}", *SERVER_URL, *SERVER_PORT);
+				io::stdout().flush().unwrap();
+				std::thread::sleep(std::time::Duration::from_secs(60));
 			}
 		}
 

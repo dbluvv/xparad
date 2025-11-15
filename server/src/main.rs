@@ -153,17 +153,19 @@ async fn main() -> sled::Result<()> {
 	
 	if help_mode == 1 {
 		println!("Options:");
-		println!("  --address addr   Set up your node address.");
+		println!("  --address ADDR   Set up your node address.");
+		println!("  --port PORT      Set the server port number (default: 22668).");
+		println!("  --rng            Enables RNG contribution.");
 		println!("  --help           Display this help menu.");
 		println!();
 		println!("Example:");
-		println!("  xparad --address xPbcd2f76102e4aa3eeb066ef41b5a60a150683740a8a284a86a66f4459cfa73");
+		println!("  xparad --address xPbcd2f76102e4aa3eeb066ef41b5a60a150683740a8a284a86a66f4459cfa73 --port 22668");
 		process::exit(0);
 	}
 	
 	print_banner();
 	
-    let mut node_address = "000000".to_string();
+    let mut node_address = "xP00000000000000000000000000000000000000000000000000000000000000".to_string();
     if let Some(pos) = args.iter().position(|arg| arg == "--address") {
         if let Some(addr) = args.get(pos + 1) {
             node_address = addr.clone();
@@ -172,6 +174,25 @@ async fn main() -> sled::Result<()> {
             process::exit(1);
         }
     }
+	
+	let node_port: u16 = if let Some(pos) = args.iter().position(|arg| arg == "--port") {
+		if let Some(port_str) = args.get(pos + 1) {
+			port_str.parse().unwrap_or_else(|e| {
+				eprintln!("Error: Invalid port number '{}': {}", port_str, e);
+				process::exit(1);
+			})
+		} else {
+			eprintln!("Error: --port option requires a valid port number.");
+			process::exit(1);
+		}
+	} else {
+		22668
+	};
+
+	if node_port < 1024 {
+		eprintln!("Error: Port number {} is too small (min: 1024). Ports 0-1023 require administrator privileges.", node_port);
+		process::exit(1);
+	}	
     while !is_valid_address(&node_address) {
         println!("Please enter a valid xPARA address:");
         print!("> ");
@@ -556,7 +577,7 @@ async fn main() -> sled::Result<()> {
 		});
 
 	let routes = rpc_route.or(mining_route);
-	warp::serve(routes).run(([0, 0, 0, 0], 22668)).await;
+	warp::serve(routes).run(([0, 0, 0, 0], node_port)).await;
 	Ok(())
 }
 
