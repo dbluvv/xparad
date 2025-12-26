@@ -38,9 +38,6 @@ use hex::FromHex;
 use blake3;
 use hex::encode;
 use std::collections::HashSet;
-use regex::Regex;
-use rand::RngCore;
-
 
 use crate::constants::*;
 use crate::crypto::*;
@@ -145,9 +142,112 @@ pub fn calculate_reward(height: u64) -> u64 {
 
 
 pub fn calculate_rx_diff(height: u64) -> u64 {
-	0
+	if height <= 215000 {
+		0
+	} else {
+		let expectedtime: u64 = 16 * 120;
+		let Some((blocktime, totaldiff)) = get_block_range_analysis(height-1) else { return 1200000 };
+		let x = if blocktime == 0 {
+            0
+        } else {
+            (expectedtime * totaldiff) / blocktime / 16
+        };
+		max(1200000, x)
+	}
 }
 
+pub fn get_block_range_analysis(height: u64) -> Option<(u64, u64)> {
+    let db = config::db();
+    if height < 215000 {
+        return None;
+    }
+    let mut timestamps = Vec::new();
+    let mut diff_count: u64 = 0;
+    let min_height = height.saturating_sub(500);
+    for h in (min_height..=height).rev() {
+        let key = format!("block:{:08}", h);
+        let data = match db.get(&key).ok().flatten() {
+            Some(d) => d,
+            None => continue,
+        };
+        let block: Block = match bincode::deserialize(&data) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        if block.extra_data.len() > 8 {
+            timestamps.push(block.timestamp);
+            diff_count += block.difficulty as u64;
+
+            if timestamps.len() == 16 {
+                break;
+            }
+        }
+    }
+	
+	if timestamps.len() < 16 {
+        return None;
+    }
+	
+    timestamps.reverse();
+    let first = *timestamps.first()?;
+    let last = *timestamps.last()?;
+    let duration = last.saturating_sub(first);
+    Some((duration, diff_count))
+}
+
+pub fn calculate_native_rx_diff(height: u64) -> u64 {
+	if height <= 215000 {
+		0
+	} else {
+		let expectedtime: u64 = 16 * 120;
+		let Some((blocktime, totaldiff)) = get_native_block_range_analysis(height-1) else { return 1200000 };
+		let x = if blocktime == 0 {
+            0
+        } else {
+            (expectedtime * totaldiff) / blocktime / 16
+        };
+		max(1200000, x)
+	}
+}
+
+pub fn get_native_block_range_analysis(height: u64) -> Option<(u64, u64)> {
+    let db = config::db();
+    if height < 215000 {
+        return None;
+    }
+    let mut timestamps = Vec::new();
+    let mut diff_count: u64 = 0;
+    let min_height = height.saturating_sub(500);
+    for h in (min_height..=height).rev() {
+        let key = format!("block:{:08}", h);
+        let data = match db.get(&key).ok().flatten() {
+            Some(d) => d,
+            None => continue,
+        };
+        let block: Block = match bincode::deserialize(&data) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        if block.extra_data.len() == 8 {
+            timestamps.push(block.timestamp);
+            diff_count += block.difficulty as u64;
+
+            if timestamps.len() == 16 {
+                break;
+            }
+        }
+    }
+	
+	if timestamps.len() < 16 {
+        return None;
+    }
+	
+    timestamps.reverse();
+    let first = *timestamps.first()?;
+    let last = *timestamps.last()?;
+    let duration = last.saturating_sub(first);
+    Some((duration, diff_count))
+}
 
 pub fn get_latest_block_info() -> (u64, String, u64) {
 	(config::actual_height(), config::actual_hash(), config::actual_timestamp())
@@ -203,7 +303,7 @@ pub fn generate_reward_tx(
     let staker_share = reward_amount.saturating_sub(miner_share).saturating_sub(validator_share);
 
     let outputs = vec![
-		("xPae78c37d41899e7e6469d5ee22e7ce35a8bbfff62d09f833575eb44b26fa64".to_string(), miner_share),
+		(miner_address.to_string(), miner_share),
         (miner_address.to_string(), validator_share),
         (staker_address.to_string(), staker_share),
     ];
@@ -246,9 +346,12 @@ pub fn get_mining_template(miner: &str, staker: &str) -> String {
 }
 
 pub fn fix_blockchain(last_valid_height: u64) -> Option<Block> {
-	/*while config::sync_status() == 1 {
-		std::thread::sleep(std::time::Duration::from_millis(10));
-	}*/
+	if config::async_status() == 0
+	{
+		while config::sync_status() == 1 {
+			std::thread::sleep(std::time::Duration::from_millis(10));
+		}
+	}
 	config::update_sync(1);
 	if last_valid_height > UNLOCK_OFFSET {
 		let db = config::db();
@@ -360,39 +463,6 @@ pub fn check_integrity() -> Option<Block> {
 	None
 }
 
-pub fn get_block_range_analysis(height: u64) -> Option<(u64, u64)> {
-	let db = config::db();
-	if height <= 16 {
-		return None;
-	}
-	let (start, end) = (height - 16, height);
-	let mut timestamps = Vec::new();
-	let mut diff_count = 0;
-	for h in start..end {
-		let key = format!("block:{:08}", h);
-		if let Some(data) = db.get(&key).unwrap() {
-			let block: Block = bincode::deserialize(&data).unwrap();
-			timestamps.push(block.timestamp);
-			let diff = block.difficulty as u64;
-			diff_count = diff_count + diff;
-		} else {
-			return None;
-		}
-	}
-	if let (Some(first), Some(last)) = (timestamps.first(), timestamps.last()) {
-		let duration = last.saturating_sub(*first);
-
-		Some((
-			duration,
-			diff_count
-		))
-	} else {
-		None
-	}
-}
-
-
-
 pub fn get_block_as_json(block_number: u64) -> Value {
 	let db = config::db();
 	let block_key = format!("block:{:08}", block_number);
@@ -450,7 +520,7 @@ pub fn get_rawtx_status(rawtx: &str) -> Option<String> {
 	Some(txs_str)
 }
 
-/*pub fn get_receipt_info(_txhash: &str) -> Option<(String, u64)> {
+pub fn get_receipt_info(_txhash: &str) -> Option<(String, u64)> {
 	/*let db = config::db();
 	let receipt_key = format!("receipt:{}", txhash);
 	let receiptblock_key = format!("receiptblock:{}", txhash);
@@ -461,7 +531,7 @@ pub fn get_rawtx_status(rawtx: &str) -> Option<String> {
 	let (actual_height, actual_hash, _) = get_latest_block_info();
 	//Some((receipt_str, txheight))
 	Some((actual_hash, actual_height - 1))
-}*/
+}
 
 pub fn store_raw_transaction(raw_tx: String) -> String {
     let mempooldb = config::mempooldb();
@@ -469,11 +539,13 @@ pub fn store_raw_transaction(raw_tx: String) -> String {
 	let tx_hash = hex::encode(b3_tx_hash.as_bytes());
 
     if let Some(status) = get_rawtx_status(&tx_hash) {
+		println!("TX repe");
         let _ = mempooldb.remove(&tx_hash);
         return String::new();
     }
     let _ = mempooldb.insert(raw_tx.clone(), IVec::from(raw_tx.as_bytes()));
     mempooldb.flush().expect("Failed to flush mempool DB");
+	println!("tx hash mempool db {}", tx_hash);
     tx_hash
 }
 
@@ -550,9 +622,12 @@ pub fn rx_hash_to_difficulty(hash_hex: &str) -> Result<u64, Box<dyn std::error::
 }
 
 pub fn save_block_to_db(new_block: &mut Block, checkpoint: u8) -> Result<(), Box<dyn Error>> {
-	/*while config::sync_status() == 1 {
-		std::thread::sleep(std::time::Duration::from_millis(10));
-	}*/
+	if config::async_status() == 0
+	{
+		while config::sync_status() == 1 {
+			std::thread::sleep(std::time::Duration::from_millis(10));
+		}
+	}
 	config::update_sync(1);
 	let result = (|| {
 		let db = config::db();
@@ -576,7 +651,12 @@ pub fn save_block_to_db(new_block: &mut Block, checkpoint: u8) -> Result<(), Box
 						new_block.height, receipts_root, new_block.receipts_root
 					).into());
 				}
-				let rx_difficulty = calculate_rx_diff(actual_height + 1);
+				let mut rx_difficulty = calculate_rx_diff(actual_height + 1);
+
+				if new_block.extra_data.len() == 8 {
+					rx_difficulty = calculate_native_rx_diff(actual_height + 1);
+				}
+				
 				if rx_difficulty != new_block.difficulty {
 					return Err(format!(
 						"Difficulty mismatch at block {}: expected {}, got {}",
@@ -606,29 +686,46 @@ pub fn save_block_to_db(new_block: &mut Block, checkpoint: u8) -> Result<(), Box
 					let ts_hex = format!("{:010x}", ts);
 					let target = difficulty_to_target(new_block.difficulty);
 					let rx_first_two_txs = tx_parts.iter().take(1).cloned().collect::<Vec<&str>>().join("");
+					let c_rawtx_hex = hex::encode(rx_first_two_txs);
+					let c_b3_tx_hash = blake3::hash(c_rawtx_hex.as_bytes());
+					let c_tx_hash = hex::encode(c_b3_tx_hash.as_bytes());
 					let rx_blob = match new_block.extra_data.len() {
-						0..=3 => format!(
-							"0101{}{}0000000001{}{}",
-							ts_hex,
-							prev_hash,
-							target,
-							rx_first_two_txs
-						),
-						4 => format!(
-							"{}{}{}0000000001{}{}",
-							new_block.extra_data,
-							ts_hex,
-							prev_hash,
-							target,
-							rx_first_two_txs
-						),
+						0..16 => {
+							format!(
+								"0101{}{}{}0000000001{}{}",
+								ts_hex,
+								prev_hash,
+								target,
+								c_tx_hash,
+								new_block.extra_data
+							)
+						}
 						_ => {
+							let parts: Vec<&str> = new_block.extra_data.split(':').collect();
+							if parts.len() == 2 {
+								let (blobmining, blobseed) = (parts[0], parts[1]);
+								let blob_prefix_mining = &blobmining[..78.min(blobmining.len())];
+								let blobsave = format!("{}{}", blob_prefix_mining, new_block.nonce);
+								/*if pooldb.contains_key(&blobsave)? {
+									return Err(format!("Duplicated mining blob").into());
+								}
+								let _ = pooldb.insert(blobsave.clone(), IVec::from(blobsave.as_bytes()));*/
+								let valid_seedhash = blobseed.len() == 64 && hex::decode(blobseed).is_ok();
+								let valid_blobs = blobmining.len() > 64 && hex::decode(blobmining).is_ok();
+								if valid_seedhash && valid_blobs {
+									seedhash = blobseed;
+									blobmining.to_string()
+								} else {
+									return Err(format!("Invalid merged blob data").into());
+								}
+							} else {
 								return Err(format!("Invalid extra_data field").into());
 							}
+						}
 					};
 					let mut rx_hashdiff = 0;
 					
-					if let Ok(mut stream) = nTcpStream::connect("127.0.0.1:22666") {
+					if let Ok(mut stream) = nTcpStream::connect("127.0.0.1:55667") {
 						let request = json!({
 							"blob": &rx_blob, 
 							"nonce": &new_block.nonce,
@@ -652,6 +749,7 @@ pub fn save_block_to_db(new_block: &mut Block, checkpoint: u8) -> Result<(), Box
 							}
 						}
 					}
+					
 					if rx_hashdiff < rx_difficulty {
 						return Err(format!(
 							"Difficulty mismatch for block {}: expected {}, got {}",
@@ -671,8 +769,6 @@ pub fn save_block_to_db(new_block: &mut Block, checkpoint: u8) -> Result<(), Box
 			let mut pending_inputs: Vec<(String, Vec<u8>)> = Vec::new();
 			let mut pending_outputs: Vec<(String, Vec<u8>)> = Vec::new();
 			let mut spent_utxos_in_block: HashSet<String> = HashSet::new();
-			
-			let mut rng_requests: Vec<(String, String)> = Vec::new(); // (public_key:id, extra_pattern)
 
 			for tx_str in block_transactions {
 				if let Err(e) = mempooldb.remove(&tx_str) { eprintln!("Error deleting mempool entry: {:?}", e); }
@@ -682,29 +778,6 @@ pub fn save_block_to_db(new_block: &mut Block, checkpoint: u8) -> Result<(), Box
 					if let Ok(raw_tx) = bincode::deserialize::<RawTransaction>(&tx_bytes) {
 						let b3_tx_hash = blake3::hash(&tx_str.as_bytes());
 						let tx_hash = hex::encode(b3_tx_hash.as_bytes());
-						
-						// Process RNG requests
-						if config::rng_status() == 1 {
-							for input in &raw_tx.inputs {
-								if !input.extra.is_empty() {
-									// FIND PATTERN: [id]:rng:[count]-[max]-[min]:[deadline]
-									let pattern_regex = regex::Regex::new(r"^([^:]+):rng:(\d+)-(\d+)-(\d+):(\d+)$").unwrap();
-									if let Some(caps) = pattern_regex.captures(&input.extra) {
-										let id = caps.get(1).unwrap().as_str();
-										let _count = caps.get(2).unwrap().as_str();
-										let _max = caps.get(3).unwrap().as_str();
-										let _min = caps.get(4).unwrap().as_str();
-										let _deadline = caps.get(5).unwrap().as_str();
-										// Add RNG
-										let rng_key = format!("{}:{}", raw_tx.sigpub, id);
-										rng_requests.push((rng_key.clone(), input.extra.clone()));
-										//println!("RNG request detected: {} -> {}", rng_key, input.extra);
-									}
-								}
-							}
-						}
-						//END RNG  
-						
 						if txcount > 0 {
 							let rtx = RawTransaction {
 								inputcount: raw_tx.inputcount.clone(),
@@ -831,53 +904,12 @@ pub fn save_block_to_db(new_block: &mut Block, checkpoint: u8) -> Result<(), Box
 			config::update_actual_height(new_block.height.clone());
 			config::update_actual_hash(new_block.hash.clone());
 			config::update_actual_timestamp(new_block.timestamp.clone());
-			print_log_message(format!("block inserted -> {}", new_block.height), 1);
+			if new_block.extra_data.len() == 8 {
+				print_log_message(format!("block inserted -> {}, algo: randomx, diff: {}", new_block.height, new_block.difficulty), 1);
+			} else {
+				print_log_message(format!("block inserted -> {}, algo: mergedrx, diff: {}", new_block.height, new_block.difficulty), 1);
+			}
 			let _ = check_integrity();
-			
-			let now = SystemTime::now()
-				.duration_since(UNIX_EPOCH)
-				.expect("Time went backwards")
-				.as_secs();
-			
-			// Process RNG
-            if !rng_requests.is_empty() && config::rng_status() == 1 && new_block.timestamp.clone() > (now - 60) {
-                //println!("Processing {} RNG requests for block {}", rng_requests.len(), new_block.height);
-                for (rng_key, original_pattern) in rng_requests {
-                    let mut rng_bytes = vec![0u8; 2048];
-                    let mut rng = rand::thread_rng();
-                    rng.fill_bytes(&mut rng_bytes);
-                    let rng_hash = blake3::hash(&rng_bytes);
-                    let rng_hash_hex = hex::encode(rng_hash.as_bytes());
-                    let final_message = format!("{}:{}", rng_key, rng_hash_hex);
-                    let client = reqwest::blocking::Client::new();
-                    let request_body = json!({
-                        "jsonrpc": "2.0",
-                        "id": "0",
-                        "method": "transferm",
-                        "params": {
-                            "address": "xP00000000000000000000000000000000000000000000000000000000001234",
-                            "amount": 1,
-                            "message": final_message
-                        }
-                    });
-                    match client.post("http://127.0.0.1:44448/rpc")
-                        .header("Content-Type", "application/json")
-                        .json(&request_body)
-                        .send() {
-                            Ok(response) => {
-                                if response.status().is_success() {
-                                    print_log_message(format!("RNG response sent successfully for: {}", rng_key), 1);
-                                } else {
-                                    print_log_message(format!("Failed to send RNG response for: {}", rng_key), 1);
-                                }
-                            },
-                            Err(e) => {
-                                print_log_message(format!("Error sending RNG response for {}: {}", rng_key, e), 1);
-                            }
-                        }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-            }
 		}	
 		Ok(())
 	})();
