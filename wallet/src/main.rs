@@ -45,7 +45,7 @@ pub static SERVER_URL: Lazy<String> = Lazy::new(|| {
             return format!("http://{}", args[i + 1]);
         }
     }
-    "http://localhost:22668".to_string()
+    "http://localhost".to_string()
 });
 
 pub static SERVER_PORT: Lazy<String> = Lazy::new(|| {
