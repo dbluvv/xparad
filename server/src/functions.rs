@@ -346,12 +346,6 @@ pub fn get_mining_template(miner: &str, staker: &str) -> String {
 }
 
 pub fn fix_blockchain(last_valid_height: u64) -> Option<Block> {
-	if config::async_status() == 0
-	{
-		while config::sync_status() == 1 {
-			std::thread::sleep(std::time::Duration::from_millis(10));
-		}
-	}
 	config::update_sync(1);
 	if last_valid_height > UNLOCK_OFFSET {
 		let db = config::db();
@@ -622,12 +616,6 @@ pub fn rx_hash_to_difficulty(hash_hex: &str) -> Result<u64, Box<dyn std::error::
 }
 
 pub fn save_block_to_db(new_block: &mut Block, checkpoint: u8) -> Result<(), Box<dyn Error>> {
-	if config::async_status() == 0
-	{
-		while config::sync_status() == 1 {
-			std::thread::sleep(std::time::Duration::from_millis(10));
-		}
-	}
 	config::update_sync(1);
 	let result = (|| {
 		let db = config::db();
@@ -962,3 +950,4 @@ pub fn get_mempool_records() -> Result<serde_json::Value, sled::Error> {
 	Ok(json!(records))
 
 }
+
