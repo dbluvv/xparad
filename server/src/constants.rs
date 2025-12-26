@@ -6,7 +6,7 @@ pub const COIN_NAME: &str = "xPARASITE";
 pub const COIN_SYMBOL: &str = "xPARA";
 pub const UNLOCK_OFFSET: u64 = 3;
 pub const FIX_BC_OFFSET: u64 = 1;
-pub const CHECKPOINTS: [Checkpoint; 7] = [
+pub const CHECKPOINTS: [Checkpoint; 8] = [
 	Checkpoint { height: 15000, hash: "0065116f7a959953bc5863bfdd633c0cec0f4d79eafcb48c6c15f5f64551be23" },
     Checkpoint { height: 30000, hash: "5db439b4af3f4e8a000c6172b5eb9052d1514e289983db74abd59564a621ca95" },
 	Checkpoint { height: 45000, hash: "02c70472fea6c83bf1d314faf8373131f4b2cc783c8cdd738cf2e1dbeba991c7" },
@@ -14,4 +14,6 @@ pub const CHECKPOINTS: [Checkpoint; 7] = [
 	Checkpoint { height: 75000, hash: "bbea79eb231664fc22b4795869b72b3ce456e28faf6e25facb12eca259481199" },
 	Checkpoint { height: 90000, hash: "1ad259c05d8d3a84f64901772cd281e8df8b8b5e4c52ea10909d381d14737863" },
 	Checkpoint { height: 103908, hash: "828f1f3772f6d88bf42b4cf17658e846ded351debc4e06803fc59a25ee0cb985"},
+	Checkpoint { height: 212027, hash: "411e9709c18590a2ac359686d9af7a5442b7db8e6f2a4c66d1963c6428c1ee6e"},
+
 ];
