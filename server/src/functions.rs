@@ -725,7 +725,7 @@ pub fn save_block_to_db(new_block: &mut Block, checkpoint: u8) -> Result<(), Box
 					};
 					let mut rx_hashdiff = 0;
 					
-					if let Ok(mut stream) = nTcpStream::connect("127.0.0.1:55667") {
+					if let Ok(mut stream) = nTcpStream::connect("127.0.0.1:22666") {
 						let request = json!({
 							"blob": &rx_blob, 
 							"nonce": &new_block.nonce,
@@ -960,4 +960,5 @@ pub fn get_mempool_records() -> Result<serde_json::Value, sled::Error> {
 		}
 	}
 	Ok(json!(records))
+
 }
