@@ -132,7 +132,7 @@ fn print_banner() {
     use figlet_rs::FIGfont;
 
     let standard_font = FIGfont::standard().unwrap();
-    let figure = standard_font.convert("XPARASITE - 1.4").unwrap();
+    let figure = standard_font.convert("XPARASITE - 1.5").unwrap();
     println!("{}", figure.to_string().purple().bold());
 }
 
